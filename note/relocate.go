@@ -2,8 +2,8 @@
 package note
 
 import (
+	"bytes"
 	"encoding/binary"
-	"regexp"
 	"strconv"
 )
 
@@ -193,12 +193,14 @@ func buildUpdateSet(n *Note, insertionPoint int) map[int]bool {
 //
 // Example: offsetMap = {59720: 59820} rewrites <RECOGNTEXT:59720> → <RECOGNTEXT:59820>
 // without touching <RECOGNTEXT:0> or unrelated tags.
+// Uses exact-string replacement (no regex) for performance.
 func rebuildBlock(block []byte, offsetMap map[int]int) []byte {
 	out := make([]byte, len(block))
 	copy(out, block)
 	for oldOff, newOff := range offsetMap {
-		re := regexp.MustCompile(`<([^:<>]+):` + regexp.QuoteMeta(strconv.Itoa(oldOff)) + `>`)
-		out = re.ReplaceAll(out, []byte("<${1}:"+strconv.Itoa(newOff)+">"))
+		oldStr := []byte(":" + strconv.Itoa(oldOff) + ">")
+		newStr := []byte(":" + strconv.Itoa(newOff) + ">")
+		out = bytes.ReplaceAll(out, oldStr, newStr)
 	}
 	return out
 }
