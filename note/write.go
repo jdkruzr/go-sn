@@ -58,8 +58,9 @@ type RecognBox struct {
 // Sets RECOGNSTATUS=1 and updates the RECOGNTEXT offset in page metadata.
 // Returns new file bytes suitable for writing to disk.
 //
-// The page's metadata block must be the last block before the footer (which is
-// always true for single-page notes and the final page of multi-page notes).
+// Works for any page in a single-page or multi-page note. For multi-page notes,
+// all blocks and offsets past the insertion point are relocated using a segment-based
+// emit that preserves raw LAYERBITMAP pixel data between tagged blocks.
 // Any previous RECOGNTEXT block is left as dead space; only the pointer changes.
 func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, error) {
 	if pageIdx < 0 || pageIdx >= len(n.Pages) {
