@@ -4,7 +4,10 @@ package note
 import (
 	"bytes"
 	"encoding/binary"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 // collectOffsets returns all offset values stored as tag values in the note
@@ -193,14 +196,36 @@ func buildUpdateSet(n *Note, insertionPoint int) map[int]bool {
 //
 // Example: offsetMap = {59720: 59820} rewrites <RECOGNTEXT:59720> → <RECOGNTEXT:59820>
 // without touching <RECOGNTEXT:0> or unrelated tags.
-// Uses exact-string replacement (no regex) for performance.
+// Uses regex with < anchoring to prevent matching offset values that are numeric
+// suffixes of others (e.g., :100> in :59100>).
 func rebuildBlock(block []byte, offsetMap map[int]int) []byte {
-	out := make([]byte, len(block))
-	copy(out, block)
-	for oldOff, newOff := range offsetMap {
-		oldStr := []byte(":" + strconv.Itoa(oldOff) + ">")
-		newStr := []byte(":" + strconv.Itoa(newOff) + ">")
-		out = bytes.ReplaceAll(out, oldStr, newStr)
+	if len(offsetMap) == 0 {
+		return block
 	}
-	return out
+	// Build alternation of all old offset values, sorted for deterministic regex.
+	offStrs := make([]string, 0, len(offsetMap))
+	for oldOff := range offsetMap {
+		offStrs = append(offStrs, strconv.Itoa(oldOff))
+	}
+	sort.Strings(offStrs)
+	// Anchoring on < prevents matching offset values that are numeric suffixes of others.
+	// Compile ONE regex per call (not per offset entry).
+	re := regexp.MustCompile(`<([^:<>]+):(` + strings.Join(offStrs, `|`) + `)>`)
+	return re.ReplaceAllFunc(block, func(match []byte) []byte {
+		// Find the colon separating tag name from value (scan from the end of the tag name).
+		colonIdx := bytes.Index(match[1:], []byte(":")) + 1
+		oldOff, err := strconv.Atoi(string(match[colonIdx+1 : len(match)-1]))
+		if err != nil {
+			return match
+		}
+		newOff, ok := offsetMap[oldOff]
+		if !ok {
+			return match
+		}
+		result := make([]byte, 0, len(match)+4)
+		result = append(result, match[:colonIdx+1]...) // "<TAGNAME:"
+		result = strconv.AppendInt(result, int64(newOff), 10)
+		result = append(result, '>')
+		return result
+	})
 }

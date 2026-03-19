@@ -161,6 +161,40 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 	knownOffsets := n.collectTaggedBlockOffsets(insertionPoint, footerOff)
 	slices.Sort(knownOffsets)
 
+	// Build lookup set for O(1) validation.
+	knownSet := make(map[int]bool, len(knownOffsets))
+	for _, off := range knownOffsets {
+		knownSet[off] = true
+	}
+
+	// AC5.4: Validate that subsequent page data blocks are at known tagged-block positions.
+	// If a MAINLAYER/BGLAYER/TOTALPATH offset is not in knownOffsets, the file layout
+	// is unexpected and we return a descriptive error rather than producing corrupt output.
+	for i := range n.Pages {
+		pageOff, err := n.footerPageOffset(i)
+		if err != nil || pageOff <= insertionPoint {
+			continue
+		}
+		pmLen := int(binary.LittleEndian.Uint32(n.raw[pageOff:]))
+		pm := parseTags(n.raw[pageOff+4 : pageOff+4+pmLen])
+		for _, tag := range []string{"MAINLAYER", "BGLAYER", "TOTALPATH"} {
+			val := pm[tag]
+			if val == "" || val == "0" {
+				continue
+			}
+			dataOff, err := strconv.Atoi(val)
+			if err != nil || dataOff <= insertionPoint {
+				continue
+			}
+			if !knownSet[dataOff] {
+				return nil, fmt.Errorf(
+					"page %d %s block at offset %d is not a recognized tagged block; file layout unexpected",
+					i, tag, dataOff,
+				)
+			}
+		}
+	}
+
 	// Segment-based emit: iterate over known block positions, copying gaps verbatim.
 	// Track actual output offsets for each block to update the footer PAGE tags.
 	blockOutputOffsets := make(map[int]int) // oldOffset -> newOffset in output
@@ -353,8 +387,8 @@ func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 	}
 
 	// Collect offsets from page-meta blocks: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE
-	// Also collect LAYERBITMAP from MAINLAYER/BGLAYER (but we'll NOT include them as known blocks,
-	// only mark them for offset updates in the block rebuild)
+	// LAYERBITMAP offsets are NOT collected here; they are raw pixel data (not tagged blocks)
+	// and are handled by the offset relocation in rebuildBlock via offsetMap.
 	for i := range n.Pages {
 		pageOff, err := n.footerPageOffset(i)
 		if err != nil || pageOff <= insertionPoint {
