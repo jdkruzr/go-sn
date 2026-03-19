@@ -221,8 +221,7 @@ func TestInjectRecognText_MultiPage_StdNote(t *testing.T) {
 		t.Run(fmt.Sprintf("page%d", pageIdx), func(t *testing.T) {
 			out, err := n.InjectRecognText(pageIdx, want)
 			if err != nil {
-				// AC5.4: Unexpected file layouts are allowed to fail with descriptive errors
-				t.Skipf("InjectRecognText(page %d) returned error (may indicate file layout not supported by simple block-walk): %v", pageIdx, err)
+				t.Fatalf("InjectRecognText(page %d): %v", pageIdx, err)
 			}
 
 			n2 := roundTripNote(t, out)
@@ -264,8 +263,7 @@ func TestInjectRecognText_MultiPage_RTRNote(t *testing.T) {
 		t.Run(fmt.Sprintf("page%d", pageIdx), func(t *testing.T) {
 			out, err := n.InjectRecognText(pageIdx, want)
 			if err != nil {
-				// AC5.4: Unexpected file layouts are allowed to fail with descriptive errors
-				t.Skipf("InjectRecognText(page %d) returned error (may indicate file layout not supported by simple block-walk): %v", pageIdx, err)
+				t.Fatalf("InjectRecognText(page %d): %v", pageIdx, err)
 			}
 
 			n2 := roundTripNote(t, out)
@@ -308,8 +306,7 @@ func TestInjectRecognText_MultiPage_BGLayerUnchanged(t *testing.T) {
 	want := RecognContent{Type: "Text", Elements: []RecognElement{{Type: "Text", Label: "x"}}}
 	out, err := n.InjectRecognText(0, want)
 	if err != nil {
-		// AC5.4: File layout may not support block-walking approach
-		t.Skipf("InjectRecognText(page 0) failed: %v (file layout may not support block-walking)", err)
+		t.Fatalf("InjectRecognText(page 0): %v", err)
 	}
 
 	n2 := roundTripNote(t, out)
@@ -339,8 +336,7 @@ func TestInjectRecognText_MultiPage_Idempotent(t *testing.T) {
 	c1 := RecognContent{Type: "Text", Elements: []RecognElement{{Type: "Text", Label: "first"}}}
 	out1, err := n.InjectRecognText(1, c1)
 	if err != nil {
-		// AC5.4: File layout may not support block-walking approach
-		t.Skipf("first inject failed: %v (file layout may not support block-walking)", err)
+		t.Fatalf("InjectRecognText(page 1): %v", err)
 	}
 
 	n2 := roundTripNote(t, out1)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 )
 
@@ -64,7 +65,6 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 	if pageIdx < 0 || pageIdx >= len(n.Pages) {
 		return nil, fmt.Errorf("page index %d out of range [0,%d)", pageIdx, len(n.Pages))
 	}
-	p := n.Pages[pageIdx]
 
 	// Locate page meta block in the raw file.
 	pageMetaOff, err := n.footerPageOffset(pageIdx)
@@ -122,7 +122,6 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 		oldMeta := n.raw[pageMetaOff+4 : pageMetaOff+4+pageMetaLen]
 		newMeta := replaceTagValue(oldMeta, "RECOGNTEXT", strconv.Itoa(newRecognOff))
 		newMeta = replaceTagValue(newMeta, "RECOGNSTATUS", "1")
-		_ = p
 
 		oldFooter := n.raw[footerOff+4 : footerOff+4+footerLen]
 		newFooter := replaceTagValue(oldFooter, fmt.Sprintf("PAGE%d", pageIdx+1), strconv.Itoa(newPageMetaOff))
@@ -139,83 +138,108 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 		return out, nil
 	}
 
-	// Multi-page path: relocate all offsets past insertionPoint.
-	affectedOffsets := collectOffsets(n, insertionPoint)
-	finalShift := computeShift(len(recognBlock), affectedOffsets)
-	offsetMap := buildOffsetMap(affectedOffsets, finalShift)
+	// Multi-page path: relocate all offsets past insertionPoint using segment-based emit.
 	updateSet := buildUpdateSet(n, insertionPoint)
 
-	// Layout invariant guard: every data-block offset referenced by a subsequent
-	// page's metadata (MAINLAYER, BGLAYER, TOTALPATH) that is > insertionPoint
-	// must be reachable by walking block boundaries forward from insertionPoint.
-	reachable := make(map[int]bool)
-	for off := insertionPoint; off < footerOff; {
-		reachable[off] = true
-		if off+4 > len(n.raw) {
-			break
-		}
-		blen := int(binary.LittleEndian.Uint32(n.raw[off:]))
-		off += 4 + blen
-	}
-	for i := range n.Pages {
-		pageOff, err := n.footerPageOffset(i)
-		if err != nil || pageOff <= insertionPoint {
-			continue
-		}
-		pmLen := int(binary.LittleEndian.Uint32(n.raw[pageOff:]))
-		pm := parseTags(n.raw[pageOff+4 : pageOff+4+pmLen])
-		for _, tag := range []string{"MAINLAYER", "BGLAYER", "TOTALPATH"} {
-			val := pm[tag]
-			if val == "" || val == "0" {
-				continue
-			}
-			dataOff, err := strconv.Atoi(val)
-			if err != nil || dataOff <= insertionPoint {
-				continue
-			}
-			if !reachable[dataOff] {
-				return nil, fmt.Errorf(
-					"page %d %s block at offset %d is not reachable by block-boundary walk from insertionPoint %d; file layout unexpected",
-					i, tag, dataOff, insertionPoint,
-				)
-			}
-		}
-	}
+	// Collect all known tagged block offsets in [insertionPoint, footerOff).
+	// We walk only between these known points, leaving raw data (LAYERBITMAP pixels) untouched.
+	knownOffsets := n.collectTaggedBlockOffsets(insertionPoint, footerOff)
+	slices.Sort(knownOffsets)
 
-	// Patch the target page's metadata: RECOGNTEXT → insertionPoint, RECOGNSTATUS → "1".
-	// (insertionPoint is where the new recognBlock lands in the output.)
+	// The target page's metadata will be patched during the segment walk after blockPositions are known.
 	oldMeta := n.raw[pageMetaOff+4 : pageMetaOff+4+pageMetaLen]
-	newMeta := replaceTagValue(oldMeta, "RECOGNTEXT", strconv.Itoa(insertionPoint))
-	newMeta = replaceTagValue(newMeta, "RECOGNSTATUS", "1")
-	_ = p
 
-	// Walk blocks from pageMetaOff to footerOff, rebuilding those in updateSet.
+	// Two-pass segment-based walk:
+	// Pass 1: collect blockPositions (output offsets for each block)
+	// Pass 2: emit blocks with offset references updated based on blockPositions
+
+	// PASS 1: Collect block positions
+	blockPositions := make(map[int]int)  // oldOffset -> newOffset in output
+	var pass1Size int
+	prevEnd := insertionPoint
+	for _, off := range knownOffsets {
+		// Count the gap
+		if off > prevEnd {
+			pass1Size += off - prevEnd
+		}
+
+		// Count this block
+		if off+4 <= len(n.raw) {
+			blen := int(binary.LittleEndian.Uint32(n.raw[off:]))
+			blockPos := insertionPoint + len(recognBlock) + pass1Size
+			blockPositions[off] = blockPos
+			pass1Size += 4 + blen
+			prevEnd = off + 4 + blen
+		}
+	}
+	if footerOff > prevEnd {
+		pass1Size += footerOff - prevEnd
+	}
+
+	// PASS 2: Emit blocks with correct offset references
 	var midSection []byte
-	for off := pageMetaOff; off < footerOff; {
+	prevEnd = insertionPoint
+	for _, off := range knownOffsets {
+		// Copy raw data gap verbatim (may contain LAYERBITMAP pixels or other raw data).
+		if off > prevEnd {
+			midSection = append(midSection, n.raw[prevEnd:off]...)
+		}
+
+		// Read the block at off.
 		if off+4 > len(n.raw) {
-			return nil, fmt.Errorf("block walk ran out of bounds at offset %d", off)
+			return nil, fmt.Errorf("block offset %d: length prefix out of bounds", off)
 		}
 		blen := int(binary.LittleEndian.Uint32(n.raw[off:]))
 		if off+4+blen > len(n.raw) {
 			return nil, fmt.Errorf("block at %d length %d exceeds file", off, blen)
 		}
+
+		// Determine body: use patched metadata for target page, rebuild if in updateSet, else unchanged.
 		var body []byte
 		if off == pageMetaOff {
-			// Target page meta: already patched above (RECOGNTEXT + RECOGNSTATUS).
-			body = rebuildBlock(newMeta, offsetMap)
+			// Patch the target page metadata
+			body = replaceTagValue(oldMeta, "RECOGNTEXT", strconv.Itoa(insertionPoint))
+			body = replaceTagValue(body, "RECOGNSTATUS", "1")
+			// Update other offset references in the target page metadata
+			body = rebuildBlock(body, blockPositions)
 		} else if updateSet[off] {
-			body = rebuildBlock(n.raw[off+4:off+4+blen], offsetMap)
+			origBody := n.raw[off+4 : off+4+blen]
+			// Rebuild offset references in other blocks
+			body = rebuildBlock(origBody, blockPositions)
 		} else {
 			body = n.raw[off+4 : off+4+blen]
 		}
 		midSection = appendBlock(midSection, body)
-		off += 4 + blen
+		prevEnd = off + 4 + blen
 	}
 
-	// Rebuild the footer.
-	oldFooter := n.raw[footerOff+4 : footerOff+4+footerLen]
-	newFooter := rebuildBlock(oldFooter, offsetMap)
+	// Copy remaining raw data from last block end to footerOff verbatim.
+	if footerOff > prevEnd {
+		midSection = append(midSection, n.raw[prevEnd:footerOff]...)
+	}
 
+	// Rebuild the footer, updating offset references using blockPositions.
+	oldFooter := n.raw[footerOff+4 : footerOff+4+footerLen]
+	newFooter := oldFooter
+
+	// First, update PAGE tags based on blockPositions
+	for i := range n.Pages {
+		pageKey := fmt.Sprintf("PAGE%d", i+1)
+		oldPageOff, err := n.footerPageOffset(i)
+		if err == nil {
+			if newPageOff, ok := blockPositions[oldPageOff]; ok {
+				newFooter = replaceTagValue(newFooter, pageKey, strconv.Itoa(newPageOff))
+			}
+		}
+	}
+
+	// Then rebuild other offset references
+	newFooter = rebuildBlock(newFooter, blockPositions)
+
+	// newFooterOff is computed from the actual lengths of recognBlock and midSection.
+	// midSection length may differ from the original span due to digit-width changes
+	// in tag values (handled by computeShift and offsetMap). The offset is not
+	// predicted but calculated from actual lengths rather than relying on finalShift.
 	newFooterOff := insertionPoint + len(recognBlock) + len(midSection)
 
 	var out []byte
@@ -267,4 +291,77 @@ func appendBlock(dst, data []byte) []byte {
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(data)))
 	dst = append(dst, lenBuf[:]...)
 	return append(dst, data...)
+}
+
+// collectTaggedBlockOffsets returns all known tagged block start offsets in the range
+// [insertionPoint, footerOff). These are the offsets we know contain structured data,
+// so we walk only between these known points, leaving raw data (like LAYERBITMAP pixels)
+// untouched in the gaps.
+//
+// Includes: insertionPoint, all page meta blocks, and all layer/path/keyword blocks
+// that are referenced by tag values. EXCLUDES LAYERBITMAP offsets (raw pixel data).
+func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
+	seen := make(map[int]bool)
+	seen[insertionPoint] = true // Target page meta block is always first known block
+
+	// Collect page meta offsets for all pages where the offset > insertionPoint
+	for i := range n.Pages {
+		off, err := n.footerPageOffset(i)
+		if err == nil && off > insertionPoint {
+			seen[off] = true
+		}
+	}
+
+	parseInt := func(s string) (int, bool) {
+		v, err := strconv.Atoi(s)
+		if err != nil || v <= 0 {
+			return 0, false
+		}
+		return v, true
+	}
+
+	// Collect offsets from footer tags: PAGE{N}, TITLE_*, KEYWORD_*
+	footerOff2 := int(binary.LittleEndian.Uint32(n.raw[len(n.raw)-4:]))
+	footerLen := int(binary.LittleEndian.Uint32(n.raw[footerOff2:]))
+	footer := parseTags(n.raw[footerOff2+4 : footerOff2+4+footerLen])
+
+	for key, val := range footer {
+		if len(key) < 4 {
+			continue
+		}
+		isKeyword := len(key) >= 8 && key[:8] == "KEYWORD_"
+		isTitle := len(key) >= 6 && key[:6] == "TITLE_"
+		if !isKeyword && !isTitle {
+			continue
+		}
+		off, ok := parseInt(val)
+		if ok && off > insertionPoint && off < footerOff {
+			seen[off] = true
+		}
+	}
+
+	// Collect offsets from page-meta blocks: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE
+	// Also collect LAYERBITMAP from MAINLAYER/BGLAYER (but we'll NOT include them as known blocks,
+	// only mark them for offset updates in the block rebuild)
+	for i := range n.Pages {
+		pageOff, err := n.footerPageOffset(i)
+		if err != nil || pageOff <= insertionPoint {
+			continue
+		}
+		pageMetaLen := int(binary.LittleEndian.Uint32(n.raw[pageOff:]))
+		pageMeta := parseTags(n.raw[pageOff+4 : pageOff+4+pageMetaLen])
+		for _, tag := range []string{"MAINLAYER", "BGLAYER", "TOTALPATH", "RECOGNTEXT", "RECOGNFILE"} {
+			val := pageMeta[tag]
+			off, ok := parseInt(val)
+			if ok && off > insertionPoint && off < footerOff {
+				seen[off] = true
+			}
+		}
+	}
+
+	result := make([]int, 0, len(seen))
+	for off := range seen {
+		result = append(result, off)
+	}
+	return result
 }
