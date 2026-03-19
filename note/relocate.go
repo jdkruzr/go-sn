@@ -3,6 +3,7 @@ package note
 
 import (
 	"encoding/binary"
+	"regexp"
 	"strconv"
 )
 
@@ -184,4 +185,20 @@ func buildUpdateSet(n *Note, insertionPoint int) map[int]bool {
 		}
 	}
 	return s
+}
+
+// rebuildBlock rewrites each offset-valued tag in block whose decimal value
+// appears as a key in offsetMap, replacing it with the mapped value.
+// Operates on the raw block body (without length prefix). Returns a new slice.
+//
+// Example: offsetMap = {59720: 59820} rewrites <RECOGNTEXT:59720> → <RECOGNTEXT:59820>
+// without touching <RECOGNTEXT:0> or unrelated tags.
+func rebuildBlock(block []byte, offsetMap map[int]int) []byte {
+	out := make([]byte, len(block))
+	copy(out, block)
+	for oldOff, newOff := range offsetMap {
+		re := regexp.MustCompile(`<([^:<>]+):` + regexp.QuoteMeta(strconv.Itoa(oldOff)) + `>`)
+		out = re.ReplaceAll(out, []byte("<${1}:"+strconv.Itoa(newOff)+">"))
+	}
+	return out
 }
