@@ -48,7 +48,8 @@ type RecognElement struct {
 	Items       []RecognElement `json:"items,omitempty"`
 }
 
-// RecognBox is a bounding box in RECOGNTEXT coordinates (device pixels).
+// RecognBox is a bounding box in RECOGNTEXT coordinates. Units depend on context:
+// millimeters for JIIX built by BuildRecognText, device pixels for device-originated RECOGNTEXT.
 type RecognBox struct {
 	X      float64 `json:"x"`
 	Y      float64 `json:"y"`

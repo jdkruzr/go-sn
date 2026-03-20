@@ -421,7 +421,7 @@ func TestBuildRecognText(t *testing.T) {
 				// AC1.3: No forbidden fields
 				jsonBytes, _ := json.Marshal(c)
 				jsonStr := string(jsonBytes)
-				for _, forbidden := range []string{"\"version\"", "\"id\"", "\"candidates\"", "\"reflow-label\""} {
+				for _, forbidden := range []string{"\"version\":", "\"id\":", "\"candidates\":", "\"reflow-label\":"} {
 					if strings.Contains(jsonStr, forbidden) {
 						t.Errorf("forbidden field in JSON: %s", forbidden)
 					}
@@ -719,7 +719,7 @@ func TestBuildRecognText_RoundTrip(t *testing.T) {
 	// Verify JSON has no forbidden fields
 	jsonBytes, _ := json.Marshal(decoded)
 	jsonStr := string(jsonBytes)
-	for _, forbidden := range []string{"\"version\"", "\"id\"", "\"candidates\"", "\"reflow-label\""} {
+	for _, forbidden := range []string{"\"version\":", "\"id\":", "\"candidates\":", "\"reflow-label\":"} {
 		if strings.Contains(jsonStr, forbidden) {
 			t.Errorf("forbidden field in JSON: %s", forbidden)
 		}
