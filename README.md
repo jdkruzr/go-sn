@@ -72,11 +72,25 @@ content := note.RecognContent{
         {Type: "Text", Label: "Hello from OCR"},
     },
 }
-newBytes, err := n.InjectRecognText(0, content)
-if err != nil {
-    log.Fatal(err)
+
+// Inject into each page. Reload after each write because file offsets shift.
+current := n
+for pageIdx := range n.Pages {
+    out, err := current.InjectRecognText(pageIdx, content)
+    if err != nil {
+        log.Fatalf("page %d: %v", pageIdx, err)
+    }
+    if err := os.WriteFile("modified.note", out, 0644); err != nil {
+        log.Fatal(err)
+    }
+    // Reload the modified file — block offsets changed.
+    f, _ := os.Open("modified.note")
+    current, err = note.Load(f)
+    f.Close()
+    if err != nil {
+        log.Fatal(err)
+    }
 }
-os.WriteFile("modified.note", newBytes, 0644)
 ```
 
 ## Command-line tools
