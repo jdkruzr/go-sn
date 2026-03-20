@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 )
@@ -266,4 +267,31 @@ func parseTags(b []byte) Tags {
 		t[string(m[1])] = string(m[2])
 	}
 	return t
+}
+
+// devicePhysicalMM returns the physical display dimensions in millimeters
+// for the given equipment string. Used for pixel-to-mm coordinate conversion
+// in JIIX RECOGNTEXT bounding boxes.
+//
+// Dimensions are derived from display diagonal and pixel aspect ratio.
+// Unknown equipment strings fall back to Nomad (N6) dimensions.
+func devicePhysicalMM(equipment string) (widthMM, heightMM float64) {
+	switch equipment {
+	case "Manta":
+		// 10.67" diagonal, 1920×2560 pixels
+		return physicalFromDiag(10.67, 1920, 2560)
+	case "A5X", "A5_X":
+		// 10.3" diagonal, 1404×1872 pixels
+		return physicalFromDiag(10.3, 1404, 1872)
+	default:
+		// N6 (Nomad): 7.8" diagonal, 1404×1872 pixels
+		// Unknown devices also fall back to N6.
+		return physicalFromDiag(7.8, 1404, 1872)
+	}
+}
+
+func physicalFromDiag(diagInches float64, pxW, pxH int) (float64, float64) {
+	diagPx := math.Sqrt(float64(pxW*pxW + pxH*pxH))
+	mmPerPx := diagInches * 25.4 / diagPx
+	return float64(pxW) * mmPerPx, float64(pxH) * mmPerPx
 }

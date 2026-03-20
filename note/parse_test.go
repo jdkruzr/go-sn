@@ -76,3 +76,64 @@ func TestPageWidth_BackwardsCompatible(t *testing.T) {
 		t.Errorf("PageHeight() = %d, want 1872", n.PageHeight())
 	}
 }
+
+// TestDevicePhysicalMM verifies AC2.2 and AC2.4: devicePhysicalMM returns
+// correct physical dimensions for known devices and falls back to N6 for unknowns.
+func TestDevicePhysicalMM(t *testing.T) {
+	tests := []struct {
+		name      string
+		equipment string
+		wantWMM   float64 // within ±2mm tolerance
+		wantHMM   float64
+	}{
+		{
+			name:      "AC2.2: N6 dimensions",
+			equipment: "N6",
+			wantWMM:   119, // 7.8" diagonal, 1404×1872 pixels → ~119mm × ~158mm
+			wantHMM:   158,
+		},
+		{
+			name:      "AC2.2: Manta dimensions",
+			equipment: "Manta",
+			wantWMM:   163, // 10.67" diagonal, 1920×2560 pixels → ~163mm × ~217mm
+			wantHMM:   217,
+		},
+		{
+			name:      "AC2.2: A5X dimensions",
+			equipment: "A5X",
+			wantWMM:   156, // 10.3" diagonal, 1404×1872 pixels → ~156mm × ~208mm
+			wantHMM:   208,
+		},
+		{
+			name:      "AC2.2: A5_X variant",
+			equipment: "A5_X",
+			wantWMM:   156,
+			wantHMM:   208,
+		},
+		{
+			name:      "AC2.4: Unknown device falls back to N6",
+			equipment: "UNKNOWN_DEVICE",
+			wantWMM:   119,
+			wantHMM:   158,
+		},
+		{
+			name:      "AC2.4: Empty equipment falls back to N6",
+			equipment: "",
+			wantWMM:   119,
+			wantHMM:   158,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wMM, hMM := devicePhysicalMM(tt.equipment)
+			// Allow ±2mm tolerance due to floating-point arithmetic
+			if wMM < tt.wantWMM-2 || wMM > tt.wantWMM+2 {
+				t.Errorf("width = %.1f mm, want %.1f ± 2", wMM, tt.wantWMM)
+			}
+			if hMM < tt.wantHMM-2 || hMM > tt.wantHMM+2 {
+				t.Errorf("height = %.1f mm, want %.1f ± 2", hMM, tt.wantHMM)
+			}
+		})
+	}
+}
