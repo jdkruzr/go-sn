@@ -11,6 +11,8 @@ Enables OCR text injection and content extraction without the Supernote device.
 - **Exposes**: `InjectRecognText(pageIdx, content) ([]byte, error)` -- inject OCR text into any page
 - **Exposes**: `ReadRecognText(page) ([]byte, error)` -- read existing OCR text
 - **Exposes**: `DecodeObjects(tp, w, h) (*PageObjects, error)` -- decode strokes and bounding boxes
+- **Exposes**: `StrokeBounds(strokes) Rect` -- axis-aligned bounding box of all stroke points
+- **Exposes**: `BuildRecognText(text, strokeBounds, equipment) RecognContent` -- build JIIX v3 "Raw Content" RECOGNTEXT from OCR text + stroke geometry
 - **Exposes**: `Render / RenderObjects` -- render strokes to RGBA image
 - **Guarantees**: InjectRecognText works for ANY page in single or multi-page notes
 - **Guarantees**: Original .note data before insertion point is preserved byte-for-byte
@@ -18,12 +20,13 @@ Enables OCR text injection and content extraction without the Supernote device.
 - **Expects**: Valid .note file (correct magic bytes, well-formed footer)
 
 ## Dependencies
-- **Uses**: stdlib only (encoding/binary, encoding/base64, encoding/json, image, regexp)
+- **Uses**: stdlib only (encoding/binary, encoding/base64, encoding/json, image, math, regexp)
 - **Used by**: ultrabridge processor (OCR pipeline), cmd/snrender, cmd/sndump
 - **Boundary**: No database, no network -- pure file format library
 
 ## Key Decisions
 - Dead-space strategy for replaced blocks: simpler than compaction, device tolerates it
+- JIIX v3 "Raw Content" format for injected RECOGNTEXT: word-level tokenization with mm bounding boxes matches device-originated recognition, preventing SPC sync from clobbering OCR data
 - Segment-based emit for multi-page: walk known tagged block offsets, copy raw gaps (LAYERBITMAP pixel data) verbatim to avoid corrupting binary data
 - Offset relocation with digit-width convergence: inserting a block shifts all subsequent offsets; decimal string growth of offset values causes cascading shifts handled by fixpoint loop
 
@@ -31,14 +34,17 @@ Enables OCR text injection and content extraction without the Supernote device.
 - Footer is always last structured block before "tail" marker + 4-byte offset
 - Block format: [4-byte LE length][body] -- body contains `<TAG:VALUE>` pairs
 - RECOGNSTATUS=1 means RECOGNTEXT block contains valid OCR data
+- Two RecognContent formats: `"Text"` (legacy plain-text) and `"Raw Content"` (JIIX v3 with word-level bounding boxes in mm)
+- `BuildRecognText` tokenization: trailing punctuation (`.!?,`) split into separate words; spaces and newlines are separator entries without bounding boxes
+- Pixel-to-mm conversion uses equipment-specific physical display dimensions (Manta, A5X, Nomad/default)
 - Page metadata tags: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE (all offset-valued)
 - LAYERBITMAP is raw pixel data (NOT a tagged block) -- must be copied verbatim, never parsed as tags
 
 ## Key Files
 - `parse.go` -- Load, Note/Page types, BlockAt, FooterTags, parseTags
-- `write.go` -- InjectRecognText, ReadRecognText, RecognContent types, collectTaggedBlockOffsets
+- `write.go` -- InjectRecognText, ReadRecognText, BuildRecognText, RecognContent/RecognWord types, collectTaggedBlockOffsets
 - `relocate.go` -- Multi-page offset relocation: collectOffsets, computeShift, buildOffsetMap, buildUpdateSet, rebuildBlock
-- `totalpath.go` -- Stroke/Point/Rect types, DecodeObjects, DecodeTotalPath
+- `totalpath.go` -- Stroke/Point/Rect types, StrokeBounds, DecodeObjects, DecodeTotalPath
 - `render.go` -- Render, RenderObjects, RenderOpts
 
 ## Gotchas
