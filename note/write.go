@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // ReadRecognText reads and base64-decodes the RECOGNTEXT block for the given page.
@@ -418,4 +419,90 @@ func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 		result = append(result, off)
 	}
 	return result
+}
+
+// BuildRecognText constructs a device-compatible JIIX v3 "Raw Content" RecognContent
+// from plain OCR text and stroke geometry. The strokeBounds (in portrait pixel space)
+// is converted to millimeters using the physical display dimensions for the given
+// equipment string.
+//
+// Tokenization follows device conventions:
+//   - Words split by whitespace, each gets the shared bounding-box
+//   - Spaces: {"label":" "} without bounding-box
+//   - Newlines: {"label":"\n"} without bounding-box
+//   - Trailing punctuation (. ! ? ,) split into separate word with bounding-box
+//   - All text goes in a single "Text" element
+//   - Element label equals exact concatenation of word labels
+func BuildRecognText(text string, strokeBounds Rect, equipment string) RecognContent {
+	if strings.TrimSpace(text) == "" {
+		return RecognContent{
+			Type:     "Raw Content",
+			Elements: []RecognElement{},
+		}
+	}
+
+	wMM, hMM := devicePhysicalMM(equipment)
+	pxW := float64(devicePortraitWidth(equipment))
+	pxH := float64(devicePortraitHeight(equipment))
+
+	bbox := &RecognBox{
+		X:      strokeBounds.MinX * wMM / pxW,
+		Y:      strokeBounds.MinY * hMM / pxH,
+		Width:  strokeBounds.Width() * wMM / pxW,
+		Height: strokeBounds.Height() * hMM / pxH,
+	}
+
+	words := tokenizeJIIX(text, bbox)
+
+	// Reconstitute label from words to guarantee AC3.5 invariant:
+	// element label must exactly equal concatenation of word labels.
+	// strings.Fields normalizes whitespace, so raw text may differ.
+	var label strings.Builder
+	for _, w := range words {
+		label.WriteString(w.Label)
+	}
+
+	return RecognContent{
+		Type: "Raw Content",
+		Elements: []RecognElement{
+			{
+				Type:  "Text",
+				Label: label.String(),
+				Words: words,
+			},
+		},
+	}
+}
+
+// trailingPunct is the set of characters that get split from the end of a word
+// into their own bounding-boxed entry, matching device behavior.
+const trailingPunct = ".!?,"
+
+// tokenizeJIIX splits text into JIIX word entries with space/newline separators.
+func tokenizeJIIX(text string, bbox *RecognBox) []RecognWord {
+	var words []RecognWord
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			words = append(words, RecognWord{Label: "\n"})
+		}
+		tokens := strings.Fields(line)
+		for j, token := range tokens {
+			if j > 0 {
+				words = append(words, RecognWord{Label: " "})
+			}
+			// Split trailing punctuation
+			if len(token) > 1 && strings.ContainsRune(trailingPunct, rune(token[len(token)-1])) {
+				body := token[:len(token)-1]
+				punct := string(token[len(token)-1])
+				words = append(words,
+					RecognWord{Label: body, BoundingBox: bbox},
+					RecognWord{Label: punct, BoundingBox: bbox},
+				)
+			} else {
+				words = append(words, RecognWord{Label: token, BoundingBox: bbox})
+			}
+		}
+	}
+	return words
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -379,3 +380,257 @@ func TestInjectRecognText_SinglePage_Regression(t *testing.T) {
 		t.Errorf("label %q, want %q", got.Elements[0].Label, want.Elements[0].Label)
 	}
 }
+
+// TestBuildRecognText verifies BuildRecognText constructs valid JIIX RecognContent
+// from plain text and stroke geometry (verifies AC1.1, AC1.2, AC1.3, AC3.1-AC3.6).
+func TestBuildRecognText(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		bounds   Rect
+		equipment string
+		wantType string
+		checkFn  func(t *testing.T, c RecognContent)
+	}{
+		{
+			name:      "simple single word",
+			text:      "hello",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC1.1: Root type is "Raw Content"
+				if c.Type != "Raw Content" {
+					t.Errorf("Type = %q, want Raw Content", c.Type)
+				}
+				// AC1.2: Text element present with type, label, words
+				if len(c.Elements) != 1 {
+					t.Errorf("Elements count = %d, want 1", len(c.Elements))
+					return
+				}
+				e := c.Elements[0]
+				if e.Type != "Text" {
+					t.Errorf("Element type = %q, want Text", e.Type)
+				}
+				if e.Label != "hello" {
+					t.Errorf("Element label = %q, want hello", e.Label)
+				}
+				if len(e.Words) == 0 {
+					t.Errorf("Words empty, want 1 word")
+				}
+				// AC1.3: No forbidden fields
+				jsonBytes, _ := json.Marshal(c)
+				jsonStr := string(jsonBytes)
+				for _, forbidden := range []string{"\"version\"", "\"id\"", "\"candidates\"", "\"reflow-label\""} {
+					if strings.Contains(jsonStr, forbidden) {
+						t.Errorf("forbidden field in JSON: %s", forbidden)
+					}
+				}
+			},
+		},
+		{
+			name:      "multiple words with spaces",
+			text:      "hello world",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 200, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC3.1: Words split by whitespace with shared bbox
+				// AC3.2: Spaces between words without bbox
+				if len(c.Elements) != 1 {
+					return
+				}
+				e := c.Elements[0]
+				if len(e.Words) != 3 {
+					t.Errorf("Words count = %d, want 3 (hello, space, world)", len(e.Words))
+					return
+				}
+				// Check word 0: "hello" with bbox
+				if e.Words[0].Label != "hello" || e.Words[0].BoundingBox == nil {
+					t.Errorf("Word 0 should be 'hello' with bbox")
+				}
+				// Check word 1: space without bbox
+				if e.Words[1].Label != " " || e.Words[1].BoundingBox != nil {
+					t.Errorf("Word 1 should be space without bbox")
+				}
+				// Check word 2: "world" with bbox
+				if e.Words[2].Label != "world" || e.Words[2].BoundingBox == nil {
+					t.Errorf("Word 2 should be 'world' with bbox")
+				}
+				// AC3.5: Element label equals concatenation of word labels
+				if e.Label != "hello world" {
+					t.Errorf("Label = %q, want 'hello world'", e.Label)
+				}
+			},
+		},
+		{
+			name:      "multiline text",
+			text:      "hello\nworld",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 100},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC3.3: Newlines are {"label":"\n"} without bbox
+				if len(c.Elements) != 1 {
+					return
+				}
+				e := c.Elements[0]
+				if len(e.Words) != 3 {
+					t.Errorf("Words count = %d, want 3 (hello, newline, world)", len(e.Words))
+					return
+				}
+				if e.Words[1].Label != "\n" || e.Words[1].BoundingBox != nil {
+					t.Errorf("Word 1 should be newline without bbox")
+				}
+				if e.Label != "hello\nworld" {
+					t.Errorf("Label mismatch after newline")
+				}
+			},
+		},
+		{
+			name:      "trailing punctuation",
+			text:      "hello.",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC3.4: Trailing punctuation (. ! ? ,) split from word
+				if len(c.Elements) != 1 {
+					return
+				}
+				e := c.Elements[0]
+				if len(e.Words) != 2 {
+					t.Errorf("Words count = %d, want 2 (hello, period)", len(e.Words))
+					return
+				}
+				if e.Words[0].Label != "hello" {
+					t.Errorf("Word 0 = %q, want hello", e.Words[0].Label)
+				}
+				if e.Words[1].Label != "." {
+					t.Errorf("Word 1 = %q, want .", e.Words[1].Label)
+				}
+				if e.Label != "hello." {
+					t.Errorf("Label = %q, want 'hello.'", e.Label)
+				}
+			},
+		},
+		{
+			name:      "empty text",
+			text:      "",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC3.6: Empty text produces empty elements array
+				if c.Type != "Raw Content" {
+					t.Errorf("Type = %q, want Raw Content", c.Type)
+				}
+				if len(c.Elements) != 0 {
+					t.Errorf("Elements count = %d, want 0", len(c.Elements))
+				}
+			},
+		},
+		{
+			name:      "whitespace only",
+			text:      "   ",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC3.6: Whitespace-only text produces empty elements array
+				if len(c.Elements) != 0 {
+					t.Errorf("Elements count = %d, want 0", len(c.Elements))
+				}
+			},
+		},
+		{
+			name:      "multiple punctuation types",
+			text:      "hello! world? yes, no.",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 300, MaxY: 50},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				if len(c.Elements) != 1 {
+					return
+				}
+				e := c.Elements[0]
+				// Expect: hello, !, space, world, ?, space, yes, ,, space, no, .
+				expectedLabel := "hello! world? yes, no."
+				if e.Label != expectedLabel {
+					t.Errorf("Label = %q, want %q", e.Label, expectedLabel)
+				}
+				// Verify all punctuation is split
+				hasPunct := false
+				for _, w := range e.Words {
+					if w.Label == "!" || w.Label == "?" || w.Label == "," || w.Label == "." {
+						if w.BoundingBox == nil {
+							t.Errorf("Punctuation %q should have bbox", w.Label)
+						}
+						hasPunct = true
+					}
+				}
+				if !hasPunct {
+					t.Errorf("No punctuation found in words")
+				}
+			},
+		},
+		{
+			name:      "bounding box conversion to mm",
+			text:      "test",
+			bounds:    Rect{MinX: 100, MinY: 200, MaxX: 300, MaxY: 300},
+			equipment: "N6",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				if len(c.Elements) != 1 {
+					return
+				}
+				e := c.Elements[0]
+				if len(e.Words) == 0 {
+					return
+				}
+				// Check that bbox was converted (not pixel values)
+				w := e.Words[0]
+				if w.BoundingBox == nil {
+					t.Errorf("Word should have bounding box")
+					return
+				}
+				// For N6 (7.8" diagonal, 1404x1872): widthMM ≈ 119, heightMM ≈ 159
+				// Bounds: MinX=100 MinY=200 MaxX=300 MaxY=300 (width=200, height=100)
+				// X should be 100 * 119/1404 ≈ 8.5, Width should be 200 * 119/1404 ≈ 17
+				if w.BoundingBox.X > 20 {
+					t.Errorf("BoundingBox.X = %v, seems too large (should be in mm, not pixels)", w.BoundingBox.X)
+				}
+				if w.BoundingBox.Width > 30 {
+					t.Errorf("BoundingBox.Width = %v, seems too large", w.BoundingBox.Width)
+				}
+			},
+		},
+		{
+			name:      "unknown equipment fallback",
+			text:      "test",
+			bounds:    Rect{MinX: 0, MinY: 0, MaxX: 100, MaxY: 50},
+			equipment: "UNKNOWN_DEVICE",
+			wantType:  "Raw Content",
+			checkFn: func(t *testing.T, c RecognContent) {
+				// AC2.4: Unknown equipment falls back (should not error)
+				if c.Type != "Raw Content" {
+					t.Errorf("Type = %q, want Raw Content", c.Type)
+				}
+				if len(c.Elements) != 1 {
+					t.Errorf("Elements count = %d, want 1", len(c.Elements))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := BuildRecognText(tt.text, tt.bounds, tt.equipment)
+			if c.Type != tt.wantType {
+				t.Errorf("Type = %q, want %q", c.Type, tt.wantType)
+			}
+			tt.checkFn(t, c)
+		})
+	}
+}
+
