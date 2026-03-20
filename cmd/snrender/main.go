@@ -60,9 +60,6 @@ func renderFile(path, outDir string, quality, pageNum int, bbox bool) error {
 	}
 	base := strings.TrimSuffix(filepath.Base(path), ".note")
 
-	pageW := n.PageWidth()
-	pageH := n.PageHeight()
-
 	pages := n.Pages
 	if pageNum > 0 {
 		if pageNum > len(pages) {
@@ -72,6 +69,8 @@ func renderFile(path, outDir string, quality, pageNum int, bbox bool) error {
 	}
 
 	for _, p := range pages {
+		pageW, pageH := n.PageDimensions(p)
+
 		tp, err := n.TotalPathData(p)
 		if err != nil {
 			return fmt.Errorf("page %d TotalPathData: %w", p.Index+1, err)

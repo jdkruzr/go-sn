@@ -31,11 +31,11 @@ func main() {
 		log.Fatalf("parse: %v", err)
 	}
 
-	pageW := n.PageWidth()
-	pageH := n.PageHeight()
-	fmt.Printf("device: %dx%d\n", pageW, pageH)
+	fmt.Printf("device: %s (%dx%d portrait)\n", n.Header["APPLY_EQUIPMENT"], n.PageWidth(), n.PageHeight())
 
 	for _, p := range n.Pages {
+		pageW, pageH := n.PageDimensions(p)
+
 		tp, err := n.TotalPathData(p)
 		if err != nil {
 			log.Printf("page %d TotalPathData: %v", p.Index+1, err)
@@ -46,7 +46,11 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("\n=== page %d ===\n", p.Index+1)
+		orient := "portrait"
+		if p.Meta["ORIENTATION"] == "1090" {
+			orient = "landscape"
+		}
+		fmt.Printf("\n=== page %d (%s %dx%d) ===\n", p.Index+1, orient, pageW, pageH)
 		fmt.Printf("TOTALPATH length: %d bytes\n", len(tp))
 		fmt.Printf("outer_count: %d\n", binary.LittleEndian.Uint32(tp[0:4]))
 		fmt.Printf("first_obj_size: %d\n", binary.LittleEndian.Uint32(tp[4:8]))

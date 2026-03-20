@@ -205,17 +205,44 @@ func (p *Page) RecognText() string {
 	return val
 }
 
-// PageWidth returns the pixel width of this note's device.
+// PageWidth returns the pixel width of this note's device in portrait orientation.
+// For orientation-aware dimensions, use PageDimensions.
 func (n *Note) PageWidth() int {
-	return deviceWidth(n.Header["APPLY_EQUIPMENT"])
+	return devicePortraitWidth(n.Header["APPLY_EQUIPMENT"])
 }
 
-// PageHeight returns the pixel height of this note's device.
+// PageHeight returns the pixel height of this note's device in portrait orientation.
+// For orientation-aware dimensions, use PageDimensions.
 func (n *Note) PageHeight() int {
-	return deviceHeight(n.Header["APPLY_EQUIPMENT"])
+	return devicePortraitHeight(n.Header["APPLY_EQUIPMENT"])
 }
 
-func deviceWidth(equipment string) int {
+// PageDimensions returns the pixel width and height for a specific page,
+// accounting for landscape orientation (ORIENTATION=1090 in page metadata).
+func (n *Note) PageDimensions(p *Page) (w, h int) {
+	eq := n.Header["APPLY_EQUIPMENT"]
+	return p.Width(eq), p.Height(eq)
+}
+
+// Width returns the pixel width of this page, accounting for landscape orientation.
+// ORIENTATION meta tag: 1000=portrait (default), 1090=landscape.
+func (p *Page) Width(equipment string) int {
+	if p.Meta["ORIENTATION"] == "1090" {
+		return devicePortraitHeight(equipment)
+	}
+	return devicePortraitWidth(equipment)
+}
+
+// Height returns the pixel height of this page, accounting for landscape orientation.
+// ORIENTATION meta tag: 1000=portrait (default), 1090=landscape.
+func (p *Page) Height(equipment string) int {
+	if p.Meta["ORIENTATION"] == "1090" {
+		return devicePortraitWidth(equipment)
+	}
+	return devicePortraitHeight(equipment)
+}
+
+func devicePortraitWidth(equipment string) int {
 	switch equipment {
 	case "Manta":
 		return 1920
@@ -224,7 +251,7 @@ func deviceWidth(equipment string) int {
 	}
 }
 
-func deviceHeight(equipment string) int {
+func devicePortraitHeight(equipment string) int {
 	switch equipment {
 	case "Manta":
 		return 2560
