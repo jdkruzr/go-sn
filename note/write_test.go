@@ -634,3 +634,94 @@ func TestBuildRecognText(t *testing.T) {
 	}
 }
 
+// TestBuildRecognText_RoundTrip verifies the full chain: BuildRecognText → InjectRecognText
+// → file write/read → re-parse → ReadRecognText (verifies AC1.4).
+func TestBuildRecognText_RoundTrip(t *testing.T) {
+	// Load an RTR testdata file
+	n := loadNote(t, "gosnrtr.note")
+	if n.Pages[0].Meta["RECOGNSTATUS"] != "1" {
+		t.Skip("expected RTR note with existing recognition")
+	}
+
+	// Decode TOTALPATH to get strokes
+	tpData, err := n.TotalPathData(n.Pages[0])
+	if err != nil {
+		t.Fatalf("TotalPathData: %v", err)
+	}
+	if len(tpData) == 0 {
+		t.Skip("no TOTALPATH block")
+	}
+
+	w := n.PageWidth()
+	h := n.PageHeight()
+	strokes, err := DecodeTotalPath(tpData, w, h)
+	if err != nil {
+		t.Fatalf("DecodeTotalPath: %v", err)
+	}
+	if len(strokes) == 0 {
+		t.Skip("no strokes in TOTALPATH")
+	}
+
+	// Compute stroke bounds
+	bounds := StrokeBounds(strokes)
+
+	// Build JIIX RecognContent from plain text
+	testText := "Hello world."
+	testEquipment := "N6"
+	content := BuildRecognText(testText, bounds, testEquipment)
+
+	// Inject into page 0
+	out, err := n.InjectRecognText(0, content)
+	if err != nil {
+		t.Fatalf("InjectRecognText: %v", err)
+	}
+
+	// Re-parse the file
+	n2 := roundTripNote(t, out)
+
+	// Read back the RECOGNTEXT
+	readBack, err := n2.ReadRecognText(n2.Pages[0])
+	if err != nil {
+		t.Fatalf("ReadRecognText: %v", err)
+	}
+
+	// Unmarshal and verify structure
+	var decoded RecognContent
+	if err := json.Unmarshal(readBack, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// AC1.4: Verify decoded structure matches what we built
+	if decoded.Type != "Raw Content" {
+		t.Errorf("Type = %q, want Raw Content", decoded.Type)
+	}
+	if len(decoded.Elements) != 1 {
+		t.Errorf("Elements count = %d, want 1", len(decoded.Elements))
+	} else {
+		e := decoded.Elements[0]
+		if e.Type != "Text" {
+			t.Errorf("Element type = %q, want Text", e.Type)
+		}
+		if e.Label != testText {
+			t.Errorf("Element label = %q, want %q", e.Label, testText)
+		}
+		if len(e.Words) == 0 {
+			t.Errorf("Words empty")
+		}
+		// Verify words have bounding boxes in mm range (should be < 200mm for any device)
+		for _, w := range e.Words {
+			if w.BoundingBox != nil && w.BoundingBox.X > 300 {
+				t.Errorf("Word bbox X = %v, seems to be in pixels not mm", w.BoundingBox.X)
+			}
+		}
+	}
+
+	// Verify JSON has no forbidden fields
+	jsonBytes, _ := json.Marshal(decoded)
+	jsonStr := string(jsonBytes)
+	for _, forbidden := range []string{"\"version\"", "\"id\"", "\"candidates\"", "\"reflow-label\""} {
+		if strings.Contains(jsonStr, forbidden) {
+			t.Errorf("forbidden field in JSON: %s", forbidden)
+		}
+	}
+}
