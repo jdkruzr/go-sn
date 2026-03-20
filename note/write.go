@@ -43,6 +43,7 @@ type RecognElement struct {
 	Type        string          `json:"type"`
 	Label       string          `json:"label,omitempty"`
 	BoundingBox *RecognBox      `json:"bounding-box,omitempty"`
+	Words       []RecognWord    `json:"words,omitempty"`
 	Items       []RecognElement `json:"items,omitempty"`
 }
 
@@ -52,6 +53,13 @@ type RecognBox struct {
 	Y      float64 `json:"y"`
 	Width  float64 `json:"width"`
 	Height float64 `json:"height"`
+}
+
+// RecognWord is a word-level entry in JIIX RECOGNTEXT.
+// Space separators (label=" ") and newline separators (label="\n") omit BoundingBox.
+type RecognWord struct {
+	Label       string     `json:"label"`
+	BoundingBox *RecognBox `json:"bounding-box,omitempty"`
 }
 
 // InjectRecognText replaces or inserts the RECOGNTEXT block for the given page.

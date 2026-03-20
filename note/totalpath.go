@@ -34,6 +34,40 @@ type Rect struct {
 func (r Rect) Width() float64  { return r.MaxX - r.MinX }
 func (r Rect) Height() float64 { return r.MaxY - r.MinY }
 
+// StrokeBounds computes the axis-aligned bounding box enclosing all stroke points.
+// Returns a zero Rect if strokes is empty or contains no points.
+func StrokeBounds(strokes []Stroke) Rect {
+	if len(strokes) == 0 {
+		return Rect{}
+	}
+	minX := math.MaxFloat64
+	minY := math.MaxFloat64
+	maxX := -math.MaxFloat64
+	maxY := -math.MaxFloat64
+	found := false
+	for _, s := range strokes {
+		for _, pt := range s.Points {
+			found = true
+			if pt.X < minX {
+				minX = pt.X
+			}
+			if pt.X > maxX {
+				maxX = pt.X
+			}
+			if pt.Y < minY {
+				minY = pt.Y
+			}
+			if pt.Y > maxY {
+				maxY = pt.Y
+			}
+		}
+	}
+	if !found {
+		return Rect{}
+	}
+	return Rect{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
+}
+
 // NonStrokeObject is a decoded text-box or digest bounding box.
 type NonStrokeObject struct {
 	Type   ObjectType

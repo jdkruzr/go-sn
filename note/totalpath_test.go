@@ -165,3 +165,97 @@ func TestDecodeTotalPath_DropsCorruptStrokes(t *testing.T) {
 		t.Errorf("stroke 0: %d points, want 2", len(strokes[0].Points))
 	}
 }
+
+// TestStrokeBounds verifies AC2.1 and AC2.3: StrokeBounds computes
+// correct axis-aligned bounding box from stroke points, and returns
+// zero Rect for empty or no-point strokes.
+func TestStrokeBounds(t *testing.T) {
+	tests := []struct {
+		name     string
+		strokes  []Stroke
+		wantRect Rect
+	}{
+		{
+			name:    "AC2.3: empty strokes slice",
+			strokes: []Stroke{},
+			wantRect: Rect{},
+		},
+		{
+			name: "AC2.3: strokes with no points",
+			strokes: []Stroke{
+				{Points: []Point{}, Pressures: []uint16{}},
+				{Points: []Point{}, Pressures: []uint16{}},
+			},
+			wantRect: Rect{},
+		},
+		{
+			name: "AC2.1: single point",
+			strokes: []Stroke{
+				{
+					Points: []Point{{X: 100, Y: 200}},
+					Pressures: []uint16{1500},
+				},
+			},
+			wantRect: Rect{MinX: 100, MinY: 200, MaxX: 100, MaxY: 200},
+		},
+		{
+			name: "AC2.1: multiple points in single stroke",
+			strokes: []Stroke{
+				{
+					Points: []Point{
+						{X: 10, Y: 20},
+						{X: 50, Y: 60},
+						{X: 30, Y: 40},
+					},
+					Pressures: []uint16{1500, 1600, 1700},
+				},
+			},
+			wantRect: Rect{MinX: 10, MinY: 20, MaxX: 50, MaxY: 60},
+		},
+		{
+			name: "AC2.1: multiple points across multiple strokes",
+			strokes: []Stroke{
+				{
+					Points: []Point{
+						{X: 100, Y: 200},
+						{X: 150, Y: 250},
+					},
+					Pressures: []uint16{1500, 1600},
+				},
+				{
+					Points: []Point{
+						{X: 50, Y: 100},
+						{X: 300, Y: 400},
+					},
+					Pressures: []uint16{1700, 1800},
+				},
+			},
+			wantRect: Rect{MinX: 50, MinY: 100, MaxX: 300, MaxY: 400},
+		},
+		{
+			name: "AC2.1: negative coordinates",
+			strokes: []Stroke{
+				{
+					Points: []Point{
+						{X: -100, Y: -200},
+						{X: 100, Y: 200},
+					},
+					Pressures: []uint16{1500, 1600},
+				},
+			},
+			wantRect: Rect{MinX: -100, MinY: -200, MaxX: 100, MaxY: 200},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StrokeBounds(tt.strokes)
+			if got.MinX != tt.wantRect.MinX || got.MinY != tt.wantRect.MinY ||
+				got.MaxX != tt.wantRect.MaxX || got.MaxY != tt.wantRect.MaxY {
+				t.Errorf("StrokeBounds = {%v, %v, %v, %v}, want {%v, %v, %v, %v}",
+					got.MinX, got.MinY, got.MaxX, got.MaxY,
+					tt.wantRect.MinX, tt.wantRect.MinY, tt.wantRect.MaxX, tt.wantRect.MaxY)
+			}
+		})
+	}
+}
