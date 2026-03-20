@@ -238,30 +238,48 @@ func decodeStroke(tp []byte, dataStart, objSize, pageW, pageH int) (Stroke, erro
 		return Stroke{}, fmt.Errorf("coordinate data exceeds buffer: need %d, have %d", coordEnd, len(tp))
 	}
 
-	pts := make([]Point, n)
+	// Cross-validate: the pressure_count at the expected offset must match
+	// point_count. A mismatch means the header's point_count is wrong
+	// (Supernote firmware bug: inflated point_count causes coordinate data
+	// to overlap with pressure/timing arrays). Reject the entire stroke
+	// since all coordinates are unreliable when the header is corrupt.
+	if coordEnd+4 <= len(tp) {
+		pcount := int(binary.LittleEndian.Uint32(tp[coordEnd:]))
+		if pcount != n {
+			return Stroke{}, fmt.Errorf("pressure_count %d != point_count %d: corrupt stroke header", pcount, n)
+		}
+	}
+
+	// Coordinate bounds for validation (defense in depth). Raw coordinates
+	// should be within the internal page dimensions. We allow 2x margin for
+	// edge effects, but anything beyond that indicates garbage data.
+	maxRawX := uint32(tpPageH * 2)
+	maxRawY := uint32(tpPageW * 2)
+
+	pts := make([]Point, 0, n)
 	for i := 0; i < n; i++ {
 		base := dataStart + 216 + i*8
 		rawX := binary.LittleEndian.Uint32(tp[base:])
 		rawY := binary.LittleEndian.Uint32(tp[base+4:])
 
-		pts[i] = Point{
+		if rawX > maxRawX || rawY > maxRawY {
+			break // remaining "coordinates" are garbage; truncate stroke
+		}
+
+		pts = append(pts, Point{
 			Y: float64(rawX) * float64(pageH) / float64(tpPageH),
 			X: (float64(tpPageW) - float64(rawY)) * float64(pageW) / float64(tpPageW),
-		}
+		})
 	}
+	n = len(pts)
 
-	// Pressure data (optional — may be absent in future format versions)
+	// Pressure data
 	var pressures []uint16
-	if coordEnd+4 <= len(tp) {
-		pcount := int(binary.LittleEndian.Uint32(tp[coordEnd:]))
-		if pcount == n {
-			pressureEnd := coordEnd + 4 + n*2
-			if pressureEnd <= len(tp) {
-				pressures = make([]uint16, n)
-				for i := 0; i < n; i++ {
-					pressures[i] = binary.LittleEndian.Uint16(tp[coordEnd+4+i*2:])
-				}
-			}
+	pressureEnd := coordEnd + 4 + n*2
+	if pressureEnd <= len(tp) {
+		pressures = make([]uint16, n)
+		for i := 0; i < n; i++ {
+			pressures[i] = binary.LittleEndian.Uint16(tp[coordEnd+4+i*2:])
 		}
 	}
 

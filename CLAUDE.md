@@ -1,6 +1,6 @@
 # go-sn
 
-Last verified: 2026-03-19
+Last verified: 2026-03-20
 
 Go library for reading and writing Supernote `.note` files.
 

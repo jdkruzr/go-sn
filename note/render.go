@@ -158,13 +158,27 @@ func drawThickLine(img *image.RGBA, x0, y0, x1, y1, r0, r1 float64, c color.RGBA
 		return
 	}
 
-	// Bounding box
+	// Bounding box, clamped to image bounds to prevent hangs from
+	// out-of-bounds stroke coordinates (Supernote firmware bug: inflated
+	// point_count causes decoder to read pressure data as coordinates).
 	maxR := math.Max(r0, r1) + 1
 	b := img.Bounds()
 	bx0 := int(math.Floor(math.Min(x0, x1) - maxR))
 	bx1 := int(math.Ceil(math.Max(x0, x1) + maxR))
 	by0 := int(math.Floor(math.Min(y0, y1) - maxR))
 	by1 := int(math.Ceil(math.Max(y0, y1) + maxR))
+	if bx0 < b.Min.X {
+		bx0 = b.Min.X
+	}
+	if bx1 > b.Max.X {
+		bx1 = b.Max.X
+	}
+	if by0 < b.Min.Y {
+		by0 = b.Min.Y
+	}
+	if by1 > b.Max.Y {
+		by1 = b.Max.Y
+	}
 
 	for py := by0; py <= by1; py++ {
 		for px := bx0; px <= bx1; px++ {
