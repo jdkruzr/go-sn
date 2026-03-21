@@ -118,6 +118,36 @@ go install github.com/jdkruzr/go-sn/cmd/sndump@latest
 sndump example.note
 ```
 
+### sninject
+
+Standalone tool for OCR-injecting recognition text into `.note` files. Renders each page, sends it to a vision API, and injects the result as device-compatible JIIX RECOGNTEXT. Optionally zeros RECOGNFILE to prevent the device from re-running its own recognition over the injected text.
+
+No database, no sync, no file watcher — useful for one-off processing, debugging, and experimentation.
+
+```
+go install github.com/jdkruzr/go-sn/cmd/sninject@latest
+
+# Local vLLM endpoint (OpenAI-compatible)
+sninject -in my.note -out my_ocr.note \
+  -api-url http://192.168.1.5:8000 \
+  -model Qwen/Qwen3-VL-8B-Instruct
+
+# OpenRouter with Claude (Anthropic format)
+sninject -in my.note -out my_ocr.note \
+  -api-url https://openrouter.ai/api \
+  -api-key sk-or-... \
+  -model anthropic/claude-sonnet-4-20250514 \
+  -format anthropic
+
+# Dry run — just see what OCR produces, don't modify the file
+sninject -in my.note -out /dev/null -dry-run
+
+# Keep RECOGNFILE intact (device will re-recognize, but text is still injected)
+sninject -in my.note -out my_ocr.note -zero-recognfile=false
+```
+
+The `-zero-recognfile` flag (default: true) controls whether the device's MyScript iink recognition data is cleared after injection. When RECOGNFILE is present, the device compares it against RECOGNTEXT on sync and re-runs recognition if they diverge — overwriting the injected text with its own (often lower quality) results. Zeroing RECOGNFILE removes this trigger. The trade-off is that incremental recognition on that page (adding new strokes) may require a full re-recognition pass instead of an incremental update.
+
 ## .note file format
 
 A `.note` file is a sequence of length-prefixed blocks with `<KEY:VALUE>` metadata tags:
