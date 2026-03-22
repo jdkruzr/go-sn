@@ -354,8 +354,9 @@ func appendBlock(dst, data []byte) []byte {
 // so we walk only between these known points, leaving raw data (like LAYERBITMAP pixels)
 // untouched in the gaps.
 //
-// Includes: insertionPoint, all page meta blocks, all layer/path/keyword blocks
-// referenced by tag values, and LAYERBITMAP offsets from MAINLAYER/BGLAYER blocks.
+// Includes: insertionPoint, all page meta blocks, all offset-valued footer tags
+// (FILE_FEATURE, STYLE_*, TITLE_*, KEYWORD_*, etc.), all layer/path blocks
+// referenced by page metas, and LAYERBITMAP offsets from MAINLAYER/BGLAYER blocks.
 func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 	seen := make(map[int]bool)
 	seen[insertionPoint] = true // Target page meta block is always first known block
@@ -376,20 +377,14 @@ func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 		return v, true
 	}
 
-	// Collect offsets from footer tags: PAGE{N}, TITLE_*, KEYWORD_*
+	// Collect offsets from all footer tags whose values are block offsets
+	// (FILE_FEATURE, STYLE_*, TITLE_*, KEYWORD_*, etc. -- excludes PAGE{N}
+	// which are already collected above as page meta offsets).
 	footerOff2 := int(binary.LittleEndian.Uint32(n.raw[len(n.raw)-4:]))
 	footerLen := int(binary.LittleEndian.Uint32(n.raw[footerOff2:]))
 	footer := parseTags(n.raw[footerOff2+4 : footerOff2+4+footerLen])
 
-	for key, val := range footer {
-		if len(key) < 4 {
-			continue
-		}
-		isKeyword := len(key) >= 8 && key[:8] == "KEYWORD_"
-		isTitle := len(key) >= 6 && key[:6] == "TITLE_"
-		if !isKeyword && !isTitle {
-			continue
-		}
+	for _, val := range footer {
 		off, ok := parseInt(val)
 		if ok && off > insertionPoint && off < footerOff {
 			seen[off] = true

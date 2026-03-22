@@ -15,7 +15,8 @@ import (
 // incremented when a new block is inserted at insertionPoint.
 //
 // Collects from:
-//   - Footer PAGE{N}, TITLE_*, KEYWORD_* tag values
+//   - All footer tag values that parse as positive integers (PAGE{N}, TITLE_*,
+//     KEYWORD_*, FILE_FEATURE, STYLE_*, etc.)
 //   - KEYWORDSITE tags inside each KEYWORD block whose offset > insertionPoint
 //   - Each page-meta block at offset > insertionPoint: MAINLAYER, BGLAYER,
 //     TOTALPATH, RECOGNTEXT, RECOGNFILE tag values
@@ -40,18 +41,13 @@ func collectOffsets(n *Note, insertionPoint int) []int {
 	footer := parseTags(n.raw[footerOff+4 : footerOff+4+footerLen])
 
 	for key, val := range footer {
-		isPage := len(key) > 4 && key[:4] == "PAGE"
-		isTitle := len(key) > 6 && key[:6] == "TITLE_"
-		isKeyword := len(key) > 8 && key[:8] == "KEYWORD_"
-		if !isPage && !isTitle && !isKeyword {
-			continue
-		}
 		off, ok := parseInt(val)
 		if !ok {
 			continue
 		}
 		add(off)
 		// Collect KEYWORDSITE offsets inside each KEYWORD block.
+		isKeyword := len(key) >= 8 && key[:8] == "KEYWORD_"
 		if isKeyword && off > insertionPoint {
 			if block, err := n.BlockAt(off); err == nil {
 				tags := parseTags(block)

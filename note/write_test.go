@@ -186,6 +186,7 @@ func readContentForPage(t *testing.T, n *Note, pageIdx int) RecognContent {
 
 // verifyAllBlocksReachable checks that every non-zero MAINLAYER, BGLAYER, and TOTALPATH
 // offset in every page of n resolves to a readable block via BlockAt.
+// Also checks all offset-valued footer tags (FILE_FEATURE, STYLE_*, TITLE_*, etc.).
 func verifyAllBlocksReachable(t *testing.T, n *Note) {
 	t.Helper()
 	for _, p := range n.Pages {
@@ -202,6 +203,24 @@ func verifyAllBlocksReachable(t *testing.T, n *Note) {
 			if _, err := n.BlockAt(off); err != nil {
 				t.Errorf("page %d %s offset %d: BlockAt failed: %v", p.Index, tag, off, err)
 			}
+		}
+	}
+	// Verify all offset-valued footer tags point to readable blocks.
+	ft, err := n.FooterTags()
+	if err != nil {
+		t.Errorf("FooterTags: %v", err)
+		return
+	}
+	for key, val := range ft {
+		off, err := strconv.Atoi(val)
+		if err != nil || off < 28 {
+			continue // non-offset tag (e.g. DIRTY=2) or too small to be valid
+		}
+		if strings.HasPrefix(key, "PAGE") {
+			continue // page meta already checked above
+		}
+		if _, err := n.BlockAt(off); err != nil {
+			t.Errorf("footer tag %s offset %d: BlockAt failed: %v", key, off, err)
 		}
 	}
 }
@@ -490,6 +509,95 @@ func TestInjectRecognText_SequentialMultiPage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInjectRecognText_TwoPage_Sequential reproduces the fast-path bug that corrupts
+// 2-page notes. The worker injects page 0 (multi-page path), reloads, then injects
+// page 1 (fast path). The fast path drops everything between the last page meta and
+// the footer — zeroing TOTALPATH and losing TITLE/KEYWORD blocks.
+func TestInjectRecognText_TwoPage_Sequential(t *testing.T) {
+	n := loadNote(t, "20260321_215303 didwefixit.note")
+	if len(n.Pages) != 2 {
+		t.Skipf("expected 2 pages, got %d", len(n.Pages))
+	}
+
+	// Snapshot original state for comparison.
+	origBitmaps := snapshotLayerBitmaps(t, n)
+
+	// Record original TOTALPATH offsets (must be non-zero).
+	for _, p := range n.Pages {
+		tp := p.Meta["TOTALPATH"]
+		if tp == "" || tp == "0" {
+			t.Fatalf("page %d TOTALPATH is %q before injection — test file has no stroke data", p.Index, tp)
+		}
+	}
+
+	// Record original footer tags for comparison.
+	origFooter, err := n.FooterTags()
+	if err != nil {
+		t.Fatalf("FooterTags: %v", err)
+	}
+
+	// Sequential injection: page 0 then page 1 (mimics the worker loop).
+	current := n
+	for pageIdx := range current.Pages {
+		content := RecognContent{
+			Type: "Raw Content",
+			Elements: []RecognElement{{
+				Type:  "Text",
+				Label: fmt.Sprintf("page-%d-text", pageIdx),
+				Words: []RecognWord{{Label: fmt.Sprintf("page-%d-text", pageIdx), BoundingBox: &RecognBox{X: 1, Y: 1, Width: 10, Height: 5}}},
+			}},
+		}
+		out, err := current.InjectRecognText(pageIdx, content)
+		if err != nil {
+			t.Fatalf("InjectRecognText(page %d): %v", pageIdx, err)
+		}
+
+		current = roundTripNote(t, out)
+
+		// Verify structural integrity after each injection.
+		verifyAllBlocksReachable(t, current)
+		verifyLayerBitmapsPreserved(t, current, origBitmaps)
+
+		// TOTALPATH must remain non-zero for all pages after each injection.
+		for _, p := range current.Pages {
+			tp := p.Meta["TOTALPATH"]
+			if tp == "" || tp == "0" {
+				t.Errorf("after injecting page %d: page %d TOTALPATH is %q (should be non-zero)",
+					pageIdx, p.Index, tp)
+			}
+		}
+
+		// Verify the injected text is readable.
+		got := readContentForPage(t, current, pageIdx)
+		if got.Elements[0].Label != content.Elements[0].Label {
+			t.Errorf("page %d: label %q, want %q", pageIdx, got.Elements[0].Label, content.Elements[0].Label)
+		}
+	}
+
+	// After all pages injected, verify everything is still intact.
+	for pageIdx := range current.Pages {
+		wantLabel := fmt.Sprintf("page-%d-text", pageIdx)
+		got := readContentForPage(t, current, pageIdx)
+		if got.Elements[0].Label != wantLabel {
+			t.Errorf("final check page %d: label %q, want %q", pageIdx, got.Elements[0].Label, wantLabel)
+		}
+	}
+
+	// Verify footer preserved all original tag keys (e.g. TITLE_*).
+	finalFooter, err := current.FooterTags()
+	if err != nil {
+		t.Fatalf("final FooterTags: %v", err)
+	}
+	for key := range origFooter {
+		if strings.HasPrefix(key, "PAGE") {
+			continue // PAGE offsets change; skip
+		}
+		if _, ok := finalFooter[key]; !ok {
+			t.Errorf("footer tag %q present in original but missing after injection", key)
+		}
 	}
 }
 

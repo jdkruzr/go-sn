@@ -38,6 +38,7 @@ Enables OCR text injection and content extraction without the Supernote device.
 - `BuildRecognText` tokenization: trailing punctuation (`.!?,`) split into separate words; spaces and newlines are separator entries without bounding boxes
 - Pixel-to-mm conversion uses equipment-specific physical display dimensions (Manta, A5X, Nomad/default)
 - Page metadata tags: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE (all offset-valued)
+- Footer tags: PAGE{N} (page meta offsets), FILE_FEATURE, STYLE_*, TITLE_*, KEYWORD_*, DIRTY (all except DIRTY are offset-valued and must be relocated during injection)
 - LAYERBITMAP is length-prefixed but body is raw pixel data (no tags) -- tracked as a known block offset for correct relocation, emitted verbatim
 
 ## Key Files
