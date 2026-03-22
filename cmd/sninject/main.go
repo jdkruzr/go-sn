@@ -1,9 +1,21 @@
-// sninject processes a .note file through a vision-API OCR pipeline and injects
-// RECOGNTEXT into each page. Optionally zeros RECOGNFILE to prevent the device
-// from re-running its own (lower quality) recognition over the injected text.
+// pattern: Imperative Shell
+
+// sninject processes a Supernote .note file through a vision-API OCR pipeline
+// and injects searchable RECOGNTEXT into each page.
 //
-// This is a standalone debugging and experimentation tool — it does not interact
-// with any database, sync service, or file watcher. Output goes to a specified path.
+// Standard notes (FILE_RECOGN_TYPE=0) are the primary use case. The device's
+// handwriting search reads RECOGNTEXT regardless of note type, so injecting
+// recognition data into Standard notes makes them searchable — something the
+// device cannot do natively without Real-Time Recognition mode.
+//
+// RTR notes (FILE_RECOGN_TYPE=1) are refused by default because the device's
+// AUTO_CONVERT process fires ~40 seconds after opening an RTR note and
+// overwrites RECOGNTEXT from its own recognition engine, destroying any
+// injected text. Use --force-rtr to override this, but understand that
+// injected data WILL be clobbered when the note is opened on the device.
+//
+// This is a standalone tool for debugging and experimentation — it does not
+// interact with any database, sync service, or file watcher.
 //
 // Usage:
 //
@@ -15,12 +27,12 @@
 //	-api-key    OCR API key (optional for unauthenticated local endpoints)
 //	-model      OCR model name (default: Qwen/Qwen3-VL-8B-Instruct)
 //	-format     API format: "openai" or "anthropic" (default: openai)
-//	-zero-recognfile  Zero out RECOGNFILE after injection (default: true)
+//	-force-rtr  Allow processing RTR notes (injected text WILL be clobbered by device)
 //	-dry-run    OCR and print results without modifying the file
 //
 // Examples:
 //
-//	# Local vLLM endpoint
+//	# Inject OCR into a Standard note using a local vLLM endpoint
 //	sninject -in my.note -out my_ocr.note -api-url http://192.168.1.5:8000
 //
 //	# OpenRouter with Claude
@@ -32,6 +44,9 @@
 //
 //	# Dry run — just see what OCR produces
 //	sninject -in my.note -out /dev/null -dry-run
+//
+//	# Force processing an RTR note (injected text will be clobbered on device)
+//	sninject -in rtr.note -out rtr_ocr.note --force-rtr
 package main
 
 import (
@@ -58,8 +73,7 @@ func main() {
 	apiKey := flag.String("api-key", "", "OCR API key")
 	model := flag.String("model", "Qwen/Qwen3-VL-8B-Instruct", "OCR model name")
 	format := flag.String("format", "openai", "API format: openai or anthropic")
-	zeroRecogn := flag.Bool("zero-recognfile", true, "zero RECOGNFILE after injection")
-	clearRTR := flag.Bool("clear-rtr", false, "set FILE_RECOGN_TYPE to 0 (device treats as non-RTR, suppresses auto-convert)")
+	forceRTR := flag.Bool("force-rtr", false, "allow processing RTR notes (injected text WILL be clobbered by device)")
 	dryRun := flag.Bool("dry-run", false, "OCR only, don't modify file")
 	flag.Parse()
 
@@ -78,8 +92,33 @@ func main() {
 		fatal("load: %v", err)
 	}
 
-	fmt.Printf("Loaded %s: %d pages, FILE_RECOGN_TYPE=%s, APPLY_EQUIPMENT=%s\n",
-		*inPath, len(n.Pages), n.Header["FILE_RECOGN_TYPE"], n.Header["APPLY_EQUIPMENT"])
+	isRTR := n.Header["FILE_RECOGN_TYPE"] == "1"
+
+	fmt.Printf("Loaded %s: %d pages, %s, APPLY_EQUIPMENT=%s\n",
+		*inPath, len(n.Pages), noteTypeLabel(isRTR), n.Header["APPLY_EQUIPMENT"])
+
+	if isRTR && !*forceRTR {
+		fmt.Fprintf(os.Stderr, "\n"+
+			"ERROR: This is an RTR (Real-Time Recognition) note.\n"+
+			"\n"+
+			"The device's AUTO_CONVERT process fires ~40 seconds after opening an\n"+
+			"RTR note and re-derives RECOGNTEXT from its own recognition engine,\n"+
+			"destroying any text injected by sninject.\n"+
+			"\n"+
+			"To inject into RTR notes anyway, use --force-rtr. The injected text\n"+
+			"will be searchable until the note is next opened on the device.\n"+
+			"\n"+
+			"Consider converting the note to Standard mode on the device first,\n"+
+			"or creating a new Standard note with the same content.\n")
+		os.Exit(1)
+	}
+
+	if isRTR && *forceRTR {
+		fmt.Fprintf(os.Stderr, "\n"+
+			"WARNING: Processing RTR note with --force-rtr.\n"+
+			"Injected RECOGNTEXT WILL be overwritten when this note is opened on the device.\n"+
+			"Zeroing RECOGNFILE and setting FILE_RECOGN_TYPE=0 to suppress AUTO_CONVERT.\n\n")
+	}
 
 	equipment := n.Header["APPLY_EQUIPMENT"]
 	raw, err := os.ReadFile(*inPath)
@@ -167,16 +206,16 @@ func main() {
 		return
 	}
 
-	if *zeroRecogn {
-		fmt.Printf("\nZeroing RECOGNFILE and RECOGNFILESTATUS...\n")
+	// For RTR notes processed with --force-rtr: zero RECOGNFILE and set
+	// FILE_RECOGN_TYPE=0 to suppress AUTO_CONVERT. Without this, the device
+	// re-derives RECOGNTEXT ~40s after opening, clobbering injected text.
+	if isRTR && *forceRTR {
+		fmt.Printf("\nZeroing RECOGNFILE...\n")
 		raw, err = zeroRecognFile(raw)
 		if err != nil {
 			fatal("zero RECOGNFILE: %v", err)
 		}
-	}
-
-	if *clearRTR {
-		fmt.Printf("Clearing FILE_RECOGN_TYPE (non-RTR mode)...\n")
+		fmt.Printf("Setting FILE_RECOGN_TYPE=0...\n")
 		raw, err = zeroFileRecognType(raw)
 		if err != nil {
 			fatal("clear RTR: %v", err)
@@ -196,6 +235,7 @@ func main() {
 		fatal("verify: %v", err)
 	}
 	fmt.Printf("\nVerification:\n")
+	fmt.Printf("  FILE_RECOGN_TYPE=%s (%s)\n", n3.Header["FILE_RECOGN_TYPE"], noteTypeLabel(n3.Header["FILE_RECOGN_TYPE"] == "1"))
 	for i, pg := range n3.Pages {
 		fmt.Printf("  Page %d: RECOGNFILE=%s RECOGNFILESTATUS=%s RECOGNSTATUS=%s\n",
 			i, pg.Meta["RECOGNFILE"], pg.Meta["RECOGNFILESTATUS"], pg.Meta["RECOGNSTATUS"])
@@ -214,6 +254,13 @@ func main() {
 			}
 		}
 	}
+}
+
+func noteTypeLabel(isRTR bool) string {
+	if isRTR {
+		return "RTR (Real-Time Recognition)"
+	}
+	return "Standard"
 }
 
 func ocrOpenAI(baseURL, apiKey, model string, jpegData []byte) (string, error) {
@@ -326,13 +373,10 @@ func doOpenAIRequest(url, apiKey string, reqBody interface{}) (string, error) {
 // zeroFileRecognType sets FILE_RECOGN_TYPE in the file header to "0",
 // making the device treat it as a non-RTR note (suppresses AUTO_CONVERT).
 func zeroFileRecognType(raw []byte) ([]byte, error) {
-	// The header block is the first tagged block after the magic/signature.
-	// FILE_RECOGN_TYPE is in the header, which is referenced by the footer's HEADER tag.
-	// For simplicity, just find and replace in the raw bytes — FILE_RECOGN_TYPE only appears once.
 	old := []byte("<FILE_RECOGN_TYPE:1>")
 	new := []byte("<FILE_RECOGN_TYPE:0>")
 	if !bytes.Contains(raw, old) {
-		return raw, nil // already 0 or not present
+		return raw, nil
 	}
 	return bytes.Replace(raw, old, new, 1), nil
 }
@@ -364,7 +408,7 @@ func zeroRecognFile(raw []byte) ([]byte, error) {
 		}
 		metaBody := raw[pageOff+4 : pageOff+4+metaLen]
 
-		// Zero RECOGNFILE using value-padded zeros to maintain exact tag length.
+		// Zero RECOGNFILE using leading-zero padding to maintain exact tag length.
 		// E.g. <RECOGNFILE:606006> becomes <RECOGNFILE:000000> — same byte count,
 		// Atoi("000000") == 0, and no trailing garbage in the metadata block.
 		newMeta := replaceTagPreserveLen(metaBody, "RECOGNFILE", "0")
@@ -378,24 +422,17 @@ func zeroRecognFile(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-func replaceTag(meta []byte, key, newVal string) []byte {
-	re := regexp.MustCompile(`<` + regexp.QuoteMeta(key) + `:[^>]*>`)
-	return re.ReplaceAll(meta, []byte("<"+key+":"+newVal+">"))
-}
-
 // replaceTagPreserveLen replaces a tag value while keeping the exact same byte length.
 // The new value is left-padded with '0' to match the original value's length.
 // E.g. <RECOGNFILE:606006> with newVal="0" becomes <RECOGNFILE:000000>.
 func replaceTagPreserveLen(meta []byte, key, newVal string) []byte {
 	re := regexp.MustCompile(`<` + regexp.QuoteMeta(key) + `:([^>]*)>`)
 	return re.ReplaceAllFunc(meta, func(match []byte) []byte {
-		// Extract original value length
 		inner := re.FindSubmatch(match)
 		if len(inner) < 2 {
 			return match
 		}
 		origValLen := len(inner[1])
-		// Pad new value with leading zeros
 		padded := newVal
 		for len(padded) < origValLen {
 			padded = "0" + padded
