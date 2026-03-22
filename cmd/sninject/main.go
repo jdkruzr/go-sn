@@ -59,6 +59,7 @@ func main() {
 	model := flag.String("model", "Qwen/Qwen3-VL-8B-Instruct", "OCR model name")
 	format := flag.String("format", "openai", "API format: openai or anthropic")
 	zeroRecogn := flag.Bool("zero-recognfile", true, "zero RECOGNFILE after injection")
+	clearRTR := flag.Bool("clear-rtr", false, "set FILE_RECOGN_TYPE to 0 (device treats as non-RTR, suppresses auto-convert)")
 	dryRun := flag.Bool("dry-run", false, "OCR only, don't modify file")
 	flag.Parse()
 
@@ -171,6 +172,14 @@ func main() {
 		raw, err = zeroRecognFile(raw)
 		if err != nil {
 			fatal("zero RECOGNFILE: %v", err)
+		}
+	}
+
+	if *clearRTR {
+		fmt.Printf("Clearing FILE_RECOGN_TYPE (non-RTR mode)...\n")
+		raw, err = zeroFileRecognType(raw)
+		if err != nil {
+			fatal("clear RTR: %v", err)
 		}
 	}
 
@@ -314,6 +323,20 @@ func doOpenAIRequest(url, apiKey string, reqBody interface{}) (string, error) {
 	return result.Choices[0].Message.Content, nil
 }
 
+// zeroFileRecognType sets FILE_RECOGN_TYPE in the file header to "0",
+// making the device treat it as a non-RTR note (suppresses AUTO_CONVERT).
+func zeroFileRecognType(raw []byte) ([]byte, error) {
+	// The header block is the first tagged block after the magic/signature.
+	// FILE_RECOGN_TYPE is in the header, which is referenced by the footer's HEADER tag.
+	// For simplicity, just find and replace in the raw bytes — FILE_RECOGN_TYPE only appears once.
+	old := []byte("<FILE_RECOGN_TYPE:1>")
+	new := []byte("<FILE_RECOGN_TYPE:0>")
+	if !bytes.Contains(raw, old) {
+		return raw, nil // already 0 or not present
+	}
+	return bytes.Replace(raw, old, new, 1), nil
+}
+
 func zeroRecognFile(raw []byte) ([]byte, error) {
 	if len(raw) < 8 {
 		return nil, fmt.Errorf("file too short")
@@ -341,15 +364,14 @@ func zeroRecognFile(raw []byte) ([]byte, error) {
 		}
 		metaBody := raw[pageOff+4 : pageOff+4+metaLen]
 
-		newMeta := replaceTag(metaBody, "RECOGNFILE", "0")
-		newMeta = replaceTag(newMeta, "RECOGNFILESTATUS", "0")
+		// Zero RECOGNFILE using value-padded zeros to maintain exact tag length.
+		// E.g. <RECOGNFILE:606006> becomes <RECOGNFILE:000000> — same byte count,
+		// Atoi("000000") == 0, and no trailing garbage in the metadata block.
+		newMeta := replaceTagPreserveLen(metaBody, "RECOGNFILE", "0")
+		newMeta = replaceTagPreserveLen(newMeta, "RECOGNFILESTATUS", "0")
 
-		// Pad to maintain same block length (parser ignores content outside tags).
-		for len(newMeta) < len(metaBody) {
-			newMeta = append(newMeta, ' ')
-		}
-		if len(newMeta) > len(metaBody) {
-			return nil, fmt.Errorf("page %d: new meta longer than old", pageNum)
+		if len(newMeta) != len(metaBody) {
+			return nil, fmt.Errorf("page %d: meta length changed (%d -> %d)", pageNum, len(metaBody), len(newMeta))
 		}
 		copy(raw[pageOff+4:], newMeta)
 	}
@@ -359,6 +381,27 @@ func zeroRecognFile(raw []byte) ([]byte, error) {
 func replaceTag(meta []byte, key, newVal string) []byte {
 	re := regexp.MustCompile(`<` + regexp.QuoteMeta(key) + `:[^>]*>`)
 	return re.ReplaceAll(meta, []byte("<"+key+":"+newVal+">"))
+}
+
+// replaceTagPreserveLen replaces a tag value while keeping the exact same byte length.
+// The new value is left-padded with '0' to match the original value's length.
+// E.g. <RECOGNFILE:606006> with newVal="0" becomes <RECOGNFILE:000000>.
+func replaceTagPreserveLen(meta []byte, key, newVal string) []byte {
+	re := regexp.MustCompile(`<` + regexp.QuoteMeta(key) + `:([^>]*)>`)
+	return re.ReplaceAllFunc(meta, func(match []byte) []byte {
+		// Extract original value length
+		inner := re.FindSubmatch(match)
+		if len(inner) < 2 {
+			return match
+		}
+		origValLen := len(inner[1])
+		// Pad new value with leading zeros
+		padded := newVal
+		for len(padded) < origValLen {
+			padded = "0" + padded
+		}
+		return []byte("<" + key + ":" + padded + ">")
+	})
 }
 
 func truncate(s string, n int) string {
