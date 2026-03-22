@@ -354,8 +354,8 @@ func appendBlock(dst, data []byte) []byte {
 // so we walk only between these known points, leaving raw data (like LAYERBITMAP pixels)
 // untouched in the gaps.
 //
-// Includes: insertionPoint, all page meta blocks, and all layer/path/keyword blocks
-// that are referenced by tag values. EXCLUDES LAYERBITMAP offsets (raw pixel data).
+// Includes: insertionPoint, all page meta blocks, all layer/path/keyword blocks
+// referenced by tag values, and LAYERBITMAP offsets from MAINLAYER/BGLAYER blocks.
 func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 	seen := make(map[int]bool)
 	seen[insertionPoint] = true // Target page meta block is always first known block
@@ -397,8 +397,12 @@ func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 	}
 
 	// Collect offsets from page-meta blocks: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE
-	// LAYERBITMAP offsets are NOT collected here; they are raw pixel data (not tagged blocks)
-	// and are handled by the offset relocation in rebuildBlock via offsetMap.
+	// Also collect LAYERBITMAP offsets from inside MAINLAYER/BGLAYER blocks.
+	// LAYERBITMAP data is length-prefixed (BlockAt works on it) even though its body
+	// is raw pixel data without tags. Including it in knownOffsets ensures the segment
+	// walk tracks its actual output position in blockOutputOffsets, rather than relying
+	// on the uniform-shift offsetMap which doesn't account for variable block-size deltas
+	// (e.g., the target page meta growing when RECOGNTEXT changes from "0" to a 6-digit offset).
 	for i := range n.Pages {
 		pageOff, err := n.footerPageOffset(i)
 		if err != nil || pageOff <= insertionPoint {
@@ -411,6 +415,17 @@ func (n *Note) collectTaggedBlockOffsets(insertionPoint, footerOff int) []int {
 			off, ok := parseInt(val)
 			if ok && off > insertionPoint && off < footerOff {
 				seen[off] = true
+				// Collect LAYERBITMAP offset from inside layer blocks.
+				if tag == "MAINLAYER" || tag == "BGLAYER" {
+					if block, err := n.BlockAt(off); err == nil {
+						layerTags := parseTags(block)
+						if bOff, ok2 := parseInt(layerTags["LAYERBITMAP"]); ok2 {
+							if bOff > insertionPoint && bOff < footerOff {
+								seen[bOff] = true
+							}
+						}
+					}
+				}
 			}
 		}
 	}

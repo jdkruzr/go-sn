@@ -381,6 +381,118 @@ func TestInjectRecognText_SinglePage_Regression(t *testing.T) {
 	}
 }
 
+// snapshotLayerBitmaps captures the LAYERBITMAP data (raw bytes) for each page's
+// MAINLAYER and BGLAYER. Used to verify bitmap data is preserved across injection.
+func snapshotLayerBitmaps(t *testing.T, n *Note) map[string][]byte {
+	t.Helper()
+	snap := make(map[string][]byte)
+	for _, p := range n.Pages {
+		for _, layer := range []string{"MAINLAYER", "BGLAYER"} {
+			_, bitmap, err := n.LayerData(p, layer)
+			if err != nil || bitmap == nil {
+				continue
+			}
+			key := fmt.Sprintf("page%d_%s", p.Index, layer)
+			cp := make([]byte, len(bitmap))
+			copy(cp, bitmap)
+			snap[key] = cp
+		}
+	}
+	return snap
+}
+
+// verifyLayerBitmapsPreserved checks that bitmap data matches a previous snapshot.
+func verifyLayerBitmapsPreserved(t *testing.T, n *Note, snap map[string][]byte) {
+	t.Helper()
+	for _, p := range n.Pages {
+		for _, layer := range []string{"MAINLAYER", "BGLAYER"} {
+			_, bitmap, err := n.LayerData(p, layer)
+			if err != nil {
+				t.Errorf("page %d %s LayerData error: %v", p.Index, layer, err)
+				continue
+			}
+			key := fmt.Sprintf("page%d_%s", p.Index, layer)
+			orig, ok := snap[key]
+			if !ok {
+				if bitmap != nil {
+					t.Errorf("page %d %s: bitmap appeared after injection", p.Index, layer)
+				}
+				continue
+			}
+			if bitmap == nil {
+				t.Errorf("page %d %s: bitmap disappeared after injection", p.Index, layer)
+				continue
+			}
+			if len(bitmap) != len(orig) {
+				t.Errorf("page %d %s LAYERBITMAP: length changed %d → %d", p.Index, layer, len(orig), len(bitmap))
+				continue
+			}
+			for i := range orig {
+				if bitmap[i] != orig[i] {
+					t.Errorf("page %d %s LAYERBITMAP: data differs at byte %d (was 0x%02x, now 0x%02x)", p.Index, layer, i, orig[i], bitmap[i])
+					break
+				}
+			}
+		}
+	}
+}
+
+// TestInjectRecognText_SequentialMultiPage injects into every page sequentially
+// (inject page 0 → reload → inject page 1 → reload → ...) and verifies that
+// all blocks including LAYERBITMAP remain reachable after each round.
+// This reproduces the LAYERBITMAP relocation bug where offsetMap's uniform shift
+// gives wrong positions for LAYERBITMAP blocks.
+func TestInjectRecognText_SequentialMultiPage(t *testing.T) {
+	for _, name := range []string{"gosnstd.note", "gosnrtr.note"} {
+		t.Run(name, func(t *testing.T) {
+			n := loadNote(t, name)
+			if len(n.Pages) < 2 {
+				t.Skipf("need >= 2 pages, got %d", len(n.Pages))
+			}
+
+			// Snapshot original bitmap data for comparison after injection.
+			origBitmaps := snapshotLayerBitmaps(t, n)
+
+			current := n
+			for pageIdx := range current.Pages {
+				content := RecognContent{
+					Type: "Raw Content",
+					Elements: []RecognElement{{
+						Type:  "Text",
+						Label: fmt.Sprintf("page-%d-text", pageIdx),
+						Words: []RecognWord{{Label: fmt.Sprintf("page-%d-text", pageIdx), BoundingBox: &RecognBox{X: 1, Y: 1, Width: 10, Height: 5}}},
+					}},
+				}
+				out, err := current.InjectRecognText(pageIdx, content)
+				if err != nil {
+					t.Fatalf("InjectRecognText(page %d): %v", pageIdx, err)
+				}
+
+				current = roundTripNote(t, out)
+
+				// Verify structural integrity after each injection.
+				verifyAllBlocksReachable(t, current)
+				verifyLayerBitmapsPreserved(t, current, origBitmaps)
+
+				// Verify the injected text is readable.
+				got := readContentForPage(t, current, pageIdx)
+				if got.Elements[0].Label != content.Elements[0].Label {
+					t.Errorf("page %d: label %q, want %q", pageIdx, got.Elements[0].Label, content.Elements[0].Label)
+				}
+			}
+
+			// After all pages injected, verify everything is still intact.
+			for pageIdx := range current.Pages {
+				wantLabel := fmt.Sprintf("page-%d-text", pageIdx)
+				got := readContentForPage(t, current, pageIdx)
+				if got.Elements[0].Label != wantLabel {
+					t.Errorf("final check page %d: label %q, want %q", pageIdx, got.Elements[0].Label, wantLabel)
+				}
+			}
+		})
+	}
+}
+
 // TestBuildRecognText verifies BuildRecognText constructs valid JIIX RecognContent
 // from plain text and stroke geometry (verifies AC1.1, AC1.2, AC1.3, AC3.1-AC3.6).
 func TestBuildRecognText(t *testing.T) {

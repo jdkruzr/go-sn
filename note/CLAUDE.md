@@ -27,7 +27,7 @@ Enables OCR text injection and content extraction without the Supernote device.
 ## Key Decisions
 - Dead-space strategy for replaced blocks: simpler than compaction, device tolerates it
 - JIIX v3 "Raw Content" format for injected RECOGNTEXT: word-level tokenization with mm bounding boxes matches device-originated recognition, preventing SPC sync from clobbering OCR data
-- Segment-based emit for multi-page: walk known tagged block offsets, copy raw gaps (LAYERBITMAP pixel data) verbatim to avoid corrupting binary data
+- Segment-based emit for multi-page: walk known block offsets (including LAYERBITMAP), copy raw gaps verbatim to avoid corrupting binary data
 - Offset relocation with digit-width convergence: inserting a block shifts all subsequent offsets; decimal string growth of offset values causes cascading shifts handled by fixpoint loop
 
 ## Invariants
@@ -38,7 +38,7 @@ Enables OCR text injection and content extraction without the Supernote device.
 - `BuildRecognText` tokenization: trailing punctuation (`.!?,`) split into separate words; spaces and newlines are separator entries without bounding boxes
 - Pixel-to-mm conversion uses equipment-specific physical display dimensions (Manta, A5X, Nomad/default)
 - Page metadata tags: MAINLAYER, BGLAYER, TOTALPATH, RECOGNTEXT, RECOGNFILE (all offset-valued)
-- LAYERBITMAP is raw pixel data (NOT a tagged block) -- must be copied verbatim, never parsed as tags
+- LAYERBITMAP is length-prefixed but body is raw pixel data (no tags) -- tracked as a known block offset for correct relocation, emitted verbatim
 
 ## Key Files
 - `parse.go` -- Load, Note/Page types, BlockAt, FooterTags, parseTags
@@ -49,7 +49,7 @@ Enables OCR text injection and content extraction without the Supernote device.
 
 ## Gotchas
 - Supernote quirk: page numbering in footer is 1-based (PAGE1, PAGE2) but API is 0-based
-- LAYERBITMAP offsets live inside MAINLAYER/BGLAYER blocks but the bitmap data itself is raw bytes in the gap between tagged blocks
+- LAYERBITMAP data is length-prefixed (BlockAt works) but contains raw pixel data, not tags. Offsets live inside MAINLAYER/BGLAYER blocks. In file layout, bitmap data precedes its parent layer block (e.g., bitmap at 2704, MAINLAYER at 28252). collectTaggedBlockOffsets includes LAYERBITMAP so the segment walk tracks actual positions.
 - `replaceTagValue` uses regex per call -- acceptable for small tag blocks, not for bulk operations
 - Supernote firmware bug: some strokes have inflated `point_count` in the TOTALPATH header -- the decoder reads pressure/timing data as coordinates, producing values in the millions. Three defense layers handle this (see below)
 
