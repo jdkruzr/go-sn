@@ -65,7 +65,7 @@ type RecognWord struct {
 }
 
 // InjectRecognText replaces or inserts the RECOGNTEXT block for the given page.
-// Sets RECOGNSTATUS=1 and updates the RECOGNTEXT offset in page metadata.
+// Sets RECOGNSTATUS=1, RECOGNTYPE=1 and updates the RECOGNTEXT offset in page metadata.
 // Returns new file bytes suitable for writing to disk.
 //
 // Works for any page in a single-page or multi-page note. For multi-page notes,
@@ -133,6 +133,7 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 		oldMeta := n.raw[pageMetaOff+4 : pageMetaOff+4+pageMetaLen]
 		newMeta := replaceTagValue(oldMeta, "RECOGNTEXT", strconv.Itoa(newRecognOff))
 		newMeta = replaceTagValue(newMeta, "RECOGNSTATUS", "1")
+		newMeta = replaceTagValue(newMeta, "RECOGNTYPE", "1")
 
 		oldFooter := n.raw[footerOff+4 : footerOff+4+footerLen]
 		newFooter := replaceTagValue(oldFooter, fmt.Sprintf("PAGE%d", pageIdx+1), strconv.Itoa(newPageMetaOff))
@@ -163,6 +164,7 @@ func (n *Note) InjectRecognText(pageIdx int, content RecognContent) ([]byte, err
 	oldMeta := n.raw[pageMetaOff+4 : pageMetaOff+4+pageMetaLen]
 	newMeta := replaceTagValue(oldMeta, "RECOGNTEXT", strconv.Itoa(insertionPoint))
 	newMeta = replaceTagValue(newMeta, "RECOGNSTATUS", "1")
+		newMeta = replaceTagValue(newMeta, "RECOGNTYPE", "1")
 	newMeta = rebuildBlock(newMeta, offsetMap)
 
 	// Collect all KNOWN TAGGED block start offsets in [insertionPoint, footerOff).
